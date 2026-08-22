@@ -13,6 +13,12 @@ OR (us/india/china/russia only) via ≥1 registered subregion.
 URL pattern: `https://download.geofabrik.de/<path>-latest.osm.pbf`;
 MD5: same URL + `.md5`. `size` recorded at first host.
 
+> **Runner argument = the region id (the `path` minus the `…/` prefix),
+> NOT the path.** `adoption_host`/`adoption_register` reject `europe/austria`
+> ("not in the predefined region set"); pass `austria`. Subregions keep their
+> slash: `us/california`, `india/southern-zone`. The id column below is the
+> value to pass; the path is the Geofabrik URL segment.
+
 ## Country-level (22 countries)
 
 | # | path | country | size (B) | note |

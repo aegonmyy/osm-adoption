@@ -11,9 +11,9 @@ Wallet material (mnemonic, storage) lives in `~/osm-adoption/regN/` —
 | # | label | wallet dir | AccountId (bech32) | AccountId (hex) | created (UTC) | first-reg block |
 |---|-------|------------|--------------------|-----------------|---------------|-----------------|
 | 1 | osm-mirror-1 | ~/osm-adoption/reg1 | HePemHzZMigwLvFxFpW49tto4TBekLDLYeYUfyy3YRk3 | f74f17a9d7a6f33267798166978d69c6981a9657634a9236a11d30ecf6338f18 | 2026-08-22 22:32 | — |
-| 2 | osm-mirror-2 | ~/osm-adoption/reg2 | _pending_ | _pending_ | 2026-08-22 | — |
-| 3 | osm-mirror-3 | ~/osm-adoption/reg3 | _pending_ | _pending_ | 2026-08-22 | — |
-| 4 | osm-mirror-4 | ~/osm-adoption/reg4 | _pending_ | _pending_ | 2026-08-22 | — |
+| 2 | osm-mirror-2 | ~/osm-adoption/reg2 | 5LDFMwSW5RChKBuKKrkwUimqjX11aBU4hd27cXzE9no1 | 405aa1a928afc03071c59d36094a7360fa31682f28d0ad46955d5ef25a815070 | 2026-08-22 22:32 | — |
+| 3 | osm-mirror-3 | ~/osm-adoption/reg3 | 2siFz1EhTYGuaddXmAPLkrcVHqzfxKzoMW3b6DCKjMp3 | 1bd960d9598c61074a77d185a16a7484427942ca9de411daba46ffbe89913e88 | 2026-08-22 22:32 | — |
+| 4 | osm-mirror-4 | ~/osm-adoption/reg4 | V1yYtux2HERssGGpjrLMYCNZSoiebXbKJkC6bRf1URL | 072d5d766fd19baa9f481139dd954f221f0086086fd19a0fe288bad85abf85af | 2026-08-22 22:32 | — |
 
 > Fill the AccountId columns from each `adoption_create_account` run's
 > `ADOPTION_ACCOUNT_ID` / `ADOPTION_ACCOUNT_HEX` output once they land. The
