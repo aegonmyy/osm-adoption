@@ -10,7 +10,7 @@ Wallet material (mnemonic, storage) lives in `~/osm-adoption/regN/` —
 
 | # | label | wallet dir | AccountId (bech32) | AccountId (hex) | created (UTC) | first-reg block |
 |---|-------|------------|--------------------|-----------------|---------------|-----------------|
-| 1 | osm-mirror-1 | ~/osm-adoption/reg1 | _pending_ | _pending_ | 2026-08-22 | — |
+| 1 | osm-mirror-1 | ~/osm-adoption/reg1 | HePemHzZMigwLvFxFpW49tto4TBekLDLYeYUfyy3YRk3 | f74f17a9d7a6f33267798166978d69c6981a9657634a9236a11d30ecf6338f18 | 2026-08-22 22:32 | — |
 | 2 | osm-mirror-2 | ~/osm-adoption/reg2 | _pending_ | _pending_ | 2026-08-22 | — |
 | 3 | osm-mirror-3 | ~/osm-adoption/reg3 | _pending_ | _pending_ | 2026-08-22 | — |
 | 4 | osm-mirror-4 | ~/osm-adoption/reg4 | _pending_ | _pending_ | 2026-08-22 | — |

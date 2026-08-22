@@ -145,9 +145,214 @@ async fn adoption_create_account() -> Result<()> {
     wallet.store_persistent_data()?;
 
     let hex = hex::encode(account_id.value());
+    // Persist the registrar AccountId (hex) so adoption_register can reopen
+    // this wallet and sign as this account without re-deriving it.
+    std::fs::write(dir.join("account.txt"), format!("{hex}\n"))?;
     println!("ADOPTION_ACCOUNT_LABEL = {label}");
     println!("ADOPTION_ACCOUNT_ID    = {account_id}");
     println!("ADOPTION_ACCOUNT_HEX   = {hex}");
     println!("ADOPTION_WALLET_DIR    = {}", dir.display());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Host: download a region from Geofabrik, verify the published MD5, store the
+// verified bytes in Logos Storage, and append the snapshot record (CID, MD5,
+// version) to a JSONL ledger. ONE host per region per snapshot version — the
+// CID is content-derived, so every registrar's registration of that snapshot
+// points at the same blob.
+//
+//   ADOPTION_REGIONS=europe/austria,europe/belgium \
+//   cargo test -p osm-integration-tests --test adoption adoption_host -- --ignored --nocapture
+// ---------------------------------------------------------------------------
+
+fn adoption_root() -> Result<std::path::PathBuf> {
+    Ok(std::path::PathBuf::from(
+        std::env::var("ADOPTION_ROOT").unwrap_or_else(|_| "~/osm-adoption".to_owned()),
+    )
+    .expand_tilde()?)
+}
+
+/// `~/…` expansion (std has none).
+trait Tilde {
+    fn expand_tilde(self) -> Result<std::path::PathBuf>;
+}
+impl Tilde for std::path::PathBuf {
+    fn expand_tilde(self) -> Result<std::path::PathBuf> {
+        if let Ok(rest) = self.strip_prefix("~") {
+            let home = std::env::var("HOME").context("HOME not set")?;
+            let mut p = std::path::PathBuf::from(home);
+            p.push(rest);
+            Ok(p)
+        } else {
+            Ok(self)
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "adoption operator tool: downloads real Geofabrik data; needs the storage node up"]
+async fn adoption_host() -> Result<()> {
+    let regions: Vec<String> = std::env::var("ADOPTION_REGIONS")
+        .context("ADOPTION_REGIONS must be set (comma-separated region paths)")?
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+    anyhow::ensure!(!regions.is_empty(), "ADOPTION_REGIONS parsed to nothing");
+
+    let codex = std::env::var("OSM_CODEX_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8080".to_owned());
+    let cache = adoption_root()?.join("pbf-cache");
+    std::fs::create_dir_all(&cache)?;
+    let out = adoption_root()?.join("snapshots.jsonl");
+
+    let client = logos_osm::OsmClient::new(
+        logos_osm::storage::CodexStorage::new(codex.clone()),
+        cache,
+    )
+    .with_geofabrik_base(
+        std::env::var("ADOPTION_GEOFABRIK")
+            .unwrap_or_else(|_| "https://download.geofabrik.de".to_owned()),
+    );
+
+    use std::io::Write;
+    let mut ledger = std::fs::OpenOptions::new().create(true).append(true).open(&out)?;
+    for region in &regions {
+        let snap = net_retry!(client.host_region(region), &format!("host {region}"));
+        // The snapshot record IS the ledger entry (serde on HostedSnapshot:
+        // region, cid, checksum, version, bytes, path).
+        writeln!(ledger, "{}", serde_json::to_string(&snap)?)?;
+        println!(
+            "HOSTED region={} cid={} version={} bytes={} md5={}",
+            snap.region,
+            snap.cid,
+            snap.version,
+            snap.bytes,
+            hex::encode(snap.checksum),
+        );
+    }
+    println!("ledger: {}", out.display());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Register: reopen an existing registrar wallet and submit one RegisterRegion
+// per snapshot in the ledger (the real CID + Geofabrik MD5 + version), signed
+// by this wallet's public account. The deployed testnet program
+// 77ecdf2f… is targeted; nothing is deployed or initialized here.
+//
+//   ADOPTION_WALLET_DIR=~/osm-adoption/reg1 \
+//   ADOPTION_ONLY=europe/austria,europe/belgium \
+//   cargo test -p osm-integration-tests --test adoption adoption_register -- --ignored --nocapture
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "adoption operator tool: hits the public testnet; needs ADOPTION_WALLET_DIR"]
+async fn adoption_register() -> Result<()> {
+    let dir = wallet_dir()?.expand_tilde()?;
+    anyhow::ensure!(
+        dir.join("storage").exists(),
+        "{} has no wallet storage — run adoption_create_account first",
+        dir.display()
+    );
+    let default_snapshots = adoption_root()?.join("snapshots.jsonl");
+    let snapshots_path = std::env::var("ADOPTION_SNAPSHOT_JSON")
+        .map(std::path::PathBuf::from)
+        .unwrap_or(default_snapshots)
+        .expand_tilde()?;
+    let only: Option<Vec<String>> = std::env::var("ADOPTION_ONLY").ok().map(|s| {
+        s.split(',').map(|x| x.trim().to_owned()).filter(|x| !x.is_empty()).collect()
+    });
+
+    let overrides = WalletConfigOverrides {
+        sequencers: Some(vec![SequencerConnectionData {
+            sequencer_addr: testnet_url().parse().unwrap(),
+            basic_auth: None,
+        }]),
+        seq_tx_poll_max_blocks: Some(200),
+        seq_poll_max_retries: Some(2000),
+        seq_poll_timeout: Some(Duration::from_secs(3)),
+        ..Default::default()
+    };
+    let mut wallet = WalletCore::new_update_chain(
+        dir.join("config.json"),
+        dir.join("storage"),
+        dir.join("statistics.json"),
+        Some(overrides),
+    )
+    .await
+    .context("reopening registrar wallet")?;
+
+    let start = net_retry!(wallet.sync_to_latest_block(), "sync");
+    eprintln!("synced to block {start}");
+
+    // The registrar: this wallet's (single) public account, persisted at
+    // create time as hex in <wallet dir>/account.txt.
+    let account_hex = std::fs::read_to_string(dir.join("account.txt"))
+        .with_context(|| format!("{} missing — run adoption_create_account (it writes it)", dir.join("account.txt").display()))?
+        .trim()
+        .to_owned();
+    let bytes = hex::decode(&account_hex).context("account.txt is not hex")?;
+    let arr: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
+        anyhow::anyhow!("account id must be 32 bytes, got {}", v.len())
+    })?;
+    let registrar = lee_core::account::AccountId::new(arr);
+    let registrar_hex = account_hex.clone();
+    println!("REGISTRAR = 0x{registrar_hex}");
+
+    let program_id = osm_registry::osm_registry_id();
+    // Per-wallet local catalog: what THIS registrar registered (feeds the
+    // update-check freshness flow later).
+    let catalog = dir.join("catalog");
+    std::fs::create_dir_all(&catalog)?;
+    let client = logos_osm::OsmClient::new(
+        logos_osm::storage::CodexStorage::new(
+            std::env::var("OSM_CODEX_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:8080".to_owned()),
+        ),
+        catalog,
+    );
+
+    let ledger = std::fs::read_to_string(&snapshots_path)
+        .with_context(|| format!("reading {}", snapshots_path.display()))?;
+    for line in ledger.lines().filter(|l| !l.trim().is_empty()) {
+        let snap: logos_osm::HostedSnapshot =
+            serde_json::from_str(line).context("parsing snapshot ledger line")?;
+        if let Some(only) = &only {
+            if !only.contains(&snap.region) {
+                continue;
+            }
+        }
+        // Record in the local catalog if this registrar hasn't seen it yet
+        // (idempotent: catalog merge by region@version).
+        client.catalog_record_hosted(&snap)?;
+
+        let built = logos_osm::registry::build_register_region(
+            &program_id,
+            &registrar,
+            &snap.registration(None),
+        );
+        let (identities, instruction) = (
+            logos_osm::registry::to_identities(&built, &registrar),
+            built.instruction.clone(),
+        );
+        let label = format!("RegisterRegion({})", snap.region);
+        let h = wallet
+            .send_pub_tx(identities, instruction, program_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("{label} send_pub_tx failed: {e:?}"))?;
+        net_retry!(wallet.poll_transaction(h), &format!("{label}-poll"));
+        net_retry!(wallet.sync_to_latest_block(), &format!("{label}-sync"));
+        let tx_hex: String = h.0.iter().map(|b| format!("{b:02x}")).collect();
+        println!(
+            "REGISTERED region={} registrar=0x{registrar_hex} cid={} version={} md5={} tx=0x{tx_hex}",
+            snap.region,
+            snap.cid,
+            snap.version,
+            hex::encode(snap.checksum),
+        );
+    }
+    wallet.store_persistent_data()?;
     Ok(())
 }
