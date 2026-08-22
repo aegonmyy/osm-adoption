@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Guard rail: this repo (aegonmyy/osm-adoption, private) holds the OSM mirror
+# campaign's PLAN, manifests, and evidence logs ONLY. Registrar wallet
+# mnemonics and storage live in ~/osm-adoption/regN (a SEPARATE directory).
+# This hook rejects any commit that would pull secrets in, so a careless
+# `git add .` can never leak registrar root keys.
+#
+# Install:  git config core.hooksPath .githooks
+set -euo pipefail
+
+bad=0
+while IFS= read -r f; do
+  case "$f" in
+    */mnemonic.txt|mnemonic.txt|*reg[0-9]*|*reg[0-9]/*)
+      echo "pre-commit: REFUSING to commit '$f' — looks like wallet material." >&2
+      bad=1 ;;
+  esac
+done < <(git diff --cached --name-only --diff-filter=A)
+
+# Also scan staged content for a BIP39-ish mnemonic blob (12+ space-separated
+# 3-8 letter words on one line) as a second defense.
+mnem=$(git diff --cached --diff-filter=ACM -U0 | grep -E '^\+' \
+  | grep -E '^(\+[a-z]{3,8}[[:space:]]+){11,}[a-z]{3,8}' || true)
+if [ -n "$mnem" ]; then
+  echo "pre-commit: REFUSING — staged content looks like a BIP-39 mnemonic." >&2
+  bad=1
+fi
+
+[ "$bad" -eq 0 ] || exit 1
+echo "pre-commit: ok (no wallet secrets staged)"

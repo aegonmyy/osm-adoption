@@ -1,0 +1,20 @@
+# Registrar accounts
+
+One row per registrar. Created 2026-08-22 on the public LEZ testnet
+(`https://testnet.lez.logos.co`) via `tests/tests/adoption.rs` (snapshot in
+this repo). The 2-month sustained-activity clock starts at the first
+on-chain registration; account creation today is the prerequisite.
+
+Wallet material (mnemonic, storage) lives in `~/osm-adoption/regN/` —
+**not recorded here, ever.**
+
+| # | label | wallet dir | AccountId (bech32) | AccountId (hex) | created (UTC) | first-reg block |
+|---|-------|------------|--------------------|-----------------|---------------|-----------------|
+| 1 | osm-mirror-1 | ~/osm-adoption/reg1 | _pending_ | _pending_ | 2026-08-22 | — |
+| 2 | osm-mirror-2 | ~/osm-adoption/reg2 | _pending_ | _pending_ | 2026-08-22 | — |
+| 3 | osm-mirror-3 | ~/osm-adoption/reg3 | _pending_ | _pending_ | 2026-08-22 | — |
+| 4 | osm-mirror-4 | ~/osm-adoption/reg4 | _pending_ | _pending_ | 2026-08-22 | — |
+
+> Fill the AccountId columns from each `adoption_create_account` run's
+> `ADOPTION_ACCOUNT_ID` / `ADOPTION_ACCOUNT_HEX` output once they land. The
+> hex is what the on-chain registry keys a registrar by.

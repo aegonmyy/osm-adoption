@@ -1,0 +1,23 @@
+# Editor / OS noise
+*.swp
+*.swo
+.DS_Store
+*~
+# scratch
+*.tmp
+# cargo build artifacts from any rust tooling copied in
+target/
+# raw PBF downloads (huge, re-fetchable from Geofabrik)
+*.pbf
+# nothing sensitive is expected to live here (wallets are in ~/osm-adoption,
+# a SEPARATE dir — see .githooks/pre-commit for the guard rail), but if a
+# mnemonic or wallet storage file is ever accidentally copied in, never
+# track it:
+mnemonic.txt
+**/mnemonic.txt
+storage
+**/storage
+config.json
+**/config.json
+statistics.json
+**/statistics.json

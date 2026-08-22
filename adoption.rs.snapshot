@@ -1,0 +1,153 @@
+//! Adoption-campaign tooling for the OSM registry (LP-0018 / PR #71).
+//!
+//! These are operator tools for running the mirror campaign documented in
+//! `docs/ADOPTION_PLAN.md` — NOT part of the evaluated build. They are
+//! `#[ignore]`d and refuse to run unless an explicit wallet directory is
+//! supplied via env, so they can never fire in CI or by accident.
+//!
+//! The wallet dir MUST live OUTSIDE the repo (e.g. ~/osm-adoption/reg1) so
+//! keys are never committed. The mnemonic is written to `<dir>/mnemonic.txt`
+//! (mode 0600); back it up — losing it loses the registrar account.
+//!
+//! Design: ONE wallet dir = ONE registrar account. Each registrar gets its
+//! own isolated wallet (own root key, own mnemonic). This keeps accounts
+//! genuinely distinct (not one wallet holding many sub-accounts) and lets a
+//! wallet dir be handed to a real independent operator later — they run it on
+//! their own machine. To create registrar #2, run again with a different
+//! ADOPTION_WALLET_DIR (e.g. ~/osm-adoption/reg2).
+//!
+//! Run account creation:
+//!   ADOPTION_WALLET_DIR=~/osm-adoption/reg1 \
+//!   cargo test -p osm-integration-tests --test adoption \
+//!     adoption_create_account -- --ignored --nocapture
+
+use std::time::Duration;
+
+use anyhow::{bail, Context, Result};
+use wallet::cli::{
+    account::{AccountSubcommand, NewSubcommand},
+    Command, SubcommandReturnValue,
+};
+use wallet::config::{SequencerConnectionData, WalletConfigOverrides};
+use wallet::WalletCore;
+
+fn testnet_url() -> String {
+    std::env::var("OSM_TESTNET_URL")
+        .unwrap_or_else(|_| "https://testnet.lez.logos.co".to_owned())
+}
+
+fn wallet_dir() -> Result<std::path::PathBuf> {
+    let d = std::env::var("ADOPTION_WALLET_DIR")
+        .context("ADOPTION_WALLET_DIR must be set (a path OUTSIDE the repo)")?;
+    Ok(std::path::PathBuf::from(d))
+}
+
+fn wallet_pw() -> String {
+    std::env::var("ADOPTION_WALLET_PW").unwrap_or_else(|_| "adoption".to_string())
+}
+
+/// Retry a network op through the public testnet's transient 502s/timeouts.
+macro_rules! net_retry {
+    ($op:expr, $label:expr) => {{
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match $op.await {
+                Ok(v) => break v,
+                Err(e) => {
+                    let m = e.to_string();
+                    let transient = m.contains("502")
+                        || m.contains("rejected")
+                        || m.contains("timed out")
+                        || m.contains("error sending request")
+                        || m.contains("connection");
+                    if transient && attempt < 1200 {
+                        if attempt % 30 == 1 {
+                            eprintln!("[{}] transient (attempt {attempt}): {m}; retrying", $label);
+                        }
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        continue;
+                    }
+                    return Err(e.into());
+                }
+            }
+        }
+    }};
+}
+
+/// Create a persistent adoption wallet and register ONE public account on the
+/// public LEZ testnet. Prints the AccountId and persists the mnemonic + wallet
+/// storage to ADOPTION_WALLET_DIR. Refuses to run if the dir already has a
+/// wallet (so an existing registrar is never clobbered).
+#[tokio::test]
+#[ignore = "adoption operator tool: hits the public testnet; needs ADOPTION_WALLET_DIR"]
+async fn adoption_create_account() -> Result<()> {
+    let dir = wallet_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let config = dir.join("config.json");
+    let storage = dir.join("storage");
+    let statistics = dir.join("statistics.json");
+    let mnemonic_path = dir.join("mnemonic.txt");
+
+    if mnemonic_path.exists() {
+        bail!(
+            "{} already has a wallet (mnemonic.txt present). Use a fresh \
+             ADOPTION_WALLET_DIR for a new registrar; this one is in use.",
+            dir.display()
+        );
+    }
+
+    let overrides = WalletConfigOverrides {
+        sequencers: Some(vec![SequencerConnectionData {
+            sequencer_addr: testnet_url().parse().unwrap(),
+            basic_auth: None,
+        }]),
+        seq_tx_poll_max_blocks: Some(200),
+        seq_poll_max_retries: Some(2000),
+        seq_poll_timeout: Some(Duration::from_secs(3)),
+        ..Default::default()
+    };
+
+    let (mut wallet, mnemonic) = WalletCore::new_init_storage(
+        config, storage, statistics, Some(overrides), &wallet_pw(),
+    )
+    .await?;
+
+    // Persist the mnemonic (0600) so the wallet can be reopened later.
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true).create(true).truncate(true)
+        .mode(0o600)
+        .open(&mnemonic_path)?;
+    writeln!(f, "{}", mnemonic.to_string())?;
+    eprintln!("wrote mnemonic to {} (mode 0600) — BACK THIS UP", mnemonic_path.display());
+
+    let start = net_retry!(wallet.sync_to_latest_block(), "initial-sync");
+    eprintln!("testnet: {} (start block {start})", testnet_url());
+
+    let label = std::env::var("ADOPTION_ACCOUNT_LABEL")
+        .unwrap_or_else(|_| "osm-mirror-1".to_string());
+
+    let result = wallet::cli::execute_subcommand(
+        &mut wallet,
+        Command::Account(AccountSubcommand::New(NewSubcommand::Public {
+            cci: None,
+            label: Some(label.clone().into()),
+        })),
+    )
+    .await
+    .with_context(|| format!("creating account {label}"))?;
+    let SubcommandReturnValue::RegisterAccount { account_id } = result else {
+        bail!("expected a registered account id for {label}");
+    };
+
+    wallet.store_persistent_data()?;
+
+    let hex = hex::encode(account_id.value());
+    println!("ADOPTION_ACCOUNT_LABEL = {label}");
+    println!("ADOPTION_ACCOUNT_ID    = {account_id}");
+    println!("ADOPTION_ACCOUNT_HEX   = {hex}");
+    println!("ADOPTION_WALLET_DIR    = {}", dir.display());
+    Ok(())
+}
