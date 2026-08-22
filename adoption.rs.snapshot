@@ -356,3 +356,81 @@ async fn adoption_register() -> Result<()> {
     wallet.store_persistent_data()?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Readback: read the on-chain registry state for the given regions and print
+// the mirror table (registrar, cid, version, timestamp). This is the evidence
+// the submission cites — it reads the chain, not our local records.
+//
+//   ADOPTION_REGIONS=austria,belgium \
+//   cargo test -p osm-integration-tests --test adoption adoption_readback -- --ignored --nocapture
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "adoption operator tool: reads the public testnet registry state"]
+async fn adoption_readback() -> Result<()> {
+    let regions: Vec<String> = std::env::var("ADOPTION_REGIONS")
+        .context("ADOPTION_REGIONS must be set (comma-separated region ids)")?
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let dir = std::env::temp_dir().join(format!("osm-readback-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let overrides = WalletConfigOverrides {
+        sequencers: Some(vec![SequencerConnectionData {
+            sequencer_addr: testnet_url().parse().unwrap(),
+            basic_auth: None,
+        }]),
+        seq_tx_poll_max_blocks: Some(200),
+        seq_poll_max_retries: Some(2000),
+        seq_poll_timeout: Some(Duration::from_secs(3)),
+        ..Default::default()
+    };
+    let mut wallet = WalletCore::new_init_storage(
+        dir.join("config.json"),
+        dir.join("storage"),
+        dir.join("statistics.json"),
+        Some(overrides),
+        &wallet_pw(),
+    )
+    .await?
+    .0;
+    net_retry!(wallet.sync_to_latest_block(), "sync");
+
+    let program_id = osm_registry::osm_registry_id();
+    let registry = logos_osm::registry::registry_pda(&program_id);
+    let acc = net_retry!(wallet.get_account_public(registry), "registry-account");
+    let state = logos_osm::registry::decode_registry_state(acc.data.as_ref())
+        .context("decoding RegistryState")?;
+    println!(
+        "REGISTRY region_count={} registration_count={}",
+        state.region_count, state.registration_count
+    );
+
+    for region in &regions {
+        let pda = logos_osm::registry::region_pda(&program_id, region);
+        let acc = net_retry!(wallet.get_account_public(pda), &format!("region {region}"));
+        let entry = logos_osm::registry::decode_region_entry(acc.data.as_ref())
+            .with_context(|| format!("decoding RegionEntry for {region}"))?;
+        println!(
+            "REGION {} level={} parent={} mirrors={}",
+            entry.region,
+            entry.level,
+            if entry.parent.is_empty() { "-" } else { &entry.parent },
+            entry.mirrors.len()
+        );
+        for m in &entry.mirrors {
+            println!(
+                "  MIRROR registrar=0x{} cid={} version={} checksum={} ts={}",
+                hex::encode(m.registrar),
+                m.cid,
+                m.version,
+                hex::encode(m.checksum),
+                m.timestamp
+            );
+        }
+    }
+    Ok(())
+}
